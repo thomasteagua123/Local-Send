@@ -11,131 +11,254 @@ export interface DiscoveredDevice {
   port: number;
   type: string;
   platform: string;
+  version?: string;
 }
+
+const zeroconf = new Zeroconf();
 
 const SERVICE_TYPE = "localsend";
 const SERVICE_PROTOCOL = "tcp";
 const SERVICE_DOMAIN = "local.";
 
-const zeroconf = new Zeroconf();
+const DEVICE_ID = uuid.v4() as string;
 
-let deviceId = uuid.v4() as string;
+const DEVICE_NAME =
+  Device.deviceName || "Android";
 
+const PLATFORM =
+  Platform.OS;
+
+const PORT = 53317;
+
+/**
+ * Devuelve el ID del dispositivo.
+ */
 export function getDeviceId() {
-  return deviceId;
+  return DEVICE_ID;
 }
 
-export function getDeviceName() {
-  return Device.deviceName || "Dispositivo";
-}
+/**
+ * Publica este celular en la red.
+ */
+export function startPublishing() {
+  console.log(
+    "Publicando dispositivo mobile..."
+  );
 
-export function getPlatform() {
-  return Platform.OS;
-}
+  console.log(
+    "Nombre:",
+    DEVICE_NAME
+  );
 
-export function startPublishing(port: number) {
-  const name = `${getDeviceName()}-${deviceId.substring(0, 6)}`;
+  console.log(
+    "ID:",
+    DEVICE_ID
+  );
 
   zeroconf.publishService(
     SERVICE_TYPE,
     SERVICE_PROTOCOL,
     SERVICE_DOMAIN,
-    name,
-    port,
+    DEVICE_NAME,
+    PORT,
     {
-      id: deviceId,
-      deviceName: getDeviceName(),
-      platform: Platform.OS,
+      id: DEVICE_ID,
+      deviceName: DEVICE_NAME,
+      platform: PLATFORM,
       version: "1.0",
-    }
+    },
+    "DNSSD"
   );
 
-  console.log("Servicio publicado:", name);
+  zeroconf.on(
+    "published",
+    (service) => {
+      console.log(
+        "================================"
+      );
+
+      console.log(
+        "MOBILE PUBLICADO"
+      );
+
+      console.log(
+        service
+      );
+
+      console.log(
+        "================================"
+      );
+    }
+  );
 }
 
+/**
+ * Busca otros dispositivos.
+ */
 export function startDiscovery(
-  onDeviceFound: (device: DiscoveredDevice) => void,
-  onDeviceRemoved?: (name: string) => void
+  onDeviceFound: (
+    device: DiscoveredDevice
+  ) => void,
+  onDeviceRemoved?: (
+    id: string
+  ) => void
 ) {
-  const handleResolved = (service: any) => {
+  console.log(
+    "Buscando dispositivos LocalSend..."
+  );
+
+  const handleResolved = (
+    service: any
+  ) => {
     const address =
-      service.addresses?.find((ip: string) => !ip.includes(":")) ||
+      service.addresses?.find(
+        (ip: string) =>
+          ip.includes(".")
+      ) ||
       service.addresses?.[0];
 
-    if (!address) return;
+    if (!address) {
+      return;
+    }
 
     const id =
       service.txt?.id ||
       service.fullName ||
       service.name;
 
-    // No agregarnos a nosotros mismos
-    if (service.txt?.id === deviceId) {
+    /*
+     * Ignoramos nuestro propio servicio.
+     */
+    if (
+      service.txt?.id ===
+      DEVICE_ID
+    ) {
       return;
     }
 
     const device: DiscoveredDevice = {
       id,
+
       name:
         service.txt?.deviceName ||
         service.name ||
         "Dispositivo",
-      host: service.host,
+
+      host:
+        service.host,
+
       address,
-      port: service.port,
-      type: "localsend",
+
+      port:
+        service.port,
+
+      type:
+        "localsend",
+
       platform:
         service.txt?.platform ||
         "unknown",
+
+      version:
+        service.txt?.version,
     };
 
-    console.log("Dispositivo encontrado:", device);
+    console.log(
+      "Dispositivo encontrado:",
+      device
+    );
 
     onDeviceFound(device);
   };
 
-  const handleRemove = (name: string) => {
-    console.log("Dispositivo desconectado:", name);
+  const handleRemove = (
+    name: string
+  ) => {
+    console.log(
+      "Dispositivo eliminado:",
+      name
+    );
 
-    if (onDeviceRemoved) {
-      onDeviceRemoved(name);
-    }
+    onDeviceRemoved?.(
+      name
+    );
   };
 
-  zeroconf.on("resolved", handleResolved);
-  zeroconf.on("remove", handleRemove);
+  zeroconf.on(
+    "resolved",
+    handleResolved
+  );
 
-  zeroconf.on("error", (error) => {
-    console.error("Error Zeroconf:", error);
-  });
+  zeroconf.on(
+    "remove",
+    handleRemove
+  );
 
-  // DNSSD suele ser más confiable en Android
-  if (Platform.OS === "android") {
-    zeroconf.scan(
-      SERVICE_TYPE,
-      SERVICE_PROTOCOL,
-      SERVICE_DOMAIN,
-      "DNSSD"
-    );
-  } else {
-    zeroconf.scan(
-      SERVICE_TYPE,
-      SERVICE_PROTOCOL,
-      SERVICE_DOMAIN
-    );
-  }
+  zeroconf.on(
+    "error",
+    (error) => {
+      console.error(
+        "Error Zeroconf:",
+        error
+      );
+    }
+  );
+
+  /*
+   * Android:
+   * usamos DNSSD para discovery.
+   */
+  zeroconf.scan(
+    SERVICE_TYPE,
+    SERVICE_PROTOCOL,
+    SERVICE_DOMAIN,
+    "DNSSD"
+  );
 
   return () => {
     try {
-      if (Platform.OS === "android") {
-        zeroconf.stop("DNSSD");
-      } else {
-        zeroconf.stop();
-      }
+      zeroconf.stop(
+        "DNSSD"
+      );
     } catch (error) {
-      console.log("Error deteniendo discovery:", error);
+      console.log(
+        "Error deteniendo discovery:",
+        error
+      );
     }
 
     zeroconf.removeDeviceListeners();
   };
+}
+
+/**
+ * Detiene todo Zeroconf.
+ */
+export function stopDiscovery() {
+  try {
+    zeroconf.stop(
+      "DNSSD"
+    );
+  } catch {
+    // ignorar
+  }
+
+  zeroconf.removeDeviceListeners();
+}
+
+/**
+ * Deja de publicar el dispositivo.
+ */
+export function stopPublishing() {
+  try {
+    zeroconf.unpublishService(
+      DEVICE_NAME,
+      "DNSSD"
+    );
+  } catch (error) {
+    console.log(
+      "Error deteniendo publicación:",
+      error
+    );
+  }
 }

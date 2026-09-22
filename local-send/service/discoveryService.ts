@@ -22,11 +22,9 @@ const SERVICE_DOMAIN = "local.";
 
 const DEVICE_ID = uuid.v4() as string;
 
-const DEVICE_NAME =
-  Device.deviceName || "Android";
+const DEVICE_NAME = Device.deviceName || "Android";
 
-const PLATFORM =
-  Platform.OS;
+const PLATFORM = Platform.OS;
 
 const PORT = 53317;
 
@@ -38,22 +36,19 @@ export function getDeviceId() {
 }
 
 /**
+ * Devuelve el nombre publicado de este dispositivo.
+ */
+export function getDeviceName() {
+  return DEVICE_NAME;
+}
+
+/**
  * Publica este celular en la red.
  */
 export function startPublishing() {
-  console.log(
-    "Publicando dispositivo mobile..."
-  );
-
-  console.log(
-    "Nombre:",
-    DEVICE_NAME
-  );
-
-  console.log(
-    "ID:",
-    DEVICE_ID
-  );
+  console.log("Publicando dispositivo mobile...");
+  console.log("Nombre:", DEVICE_NAME);
+  console.log("ID:", DEVICE_ID);
 
   zeroconf.publishService(
     SERVICE_TYPE,
@@ -70,161 +65,88 @@ export function startPublishing() {
     "DNSSD"
   );
 
-  zeroconf.on(
-    "published",
-    (service) => {
-      console.log(
-        "================================"
-      );
-
-      console.log(
-        "MOBILE PUBLICADO"
-      );
-
-      console.log(
-        service
-      );
-
-      console.log(
-        "================================"
-      );
-    }
-  );
+  zeroconf.on("published", (service) => {
+    console.log("================================");
+    console.log("MOBILE PUBLICADO");
+    console.log(service);
+    console.log("================================");
+  });
 }
 
 /**
  * Busca otros dispositivos.
  */
 export function startDiscovery(
-  onDeviceFound: (
-    device: DiscoveredDevice
-  ) => void,
-  onDeviceRemoved?: (
-    id: string
-  ) => void
+  onDeviceFound: (device: DiscoveredDevice) => void,
+  onDeviceRemoved?: (id: string) => void
 ) {
-  console.log(
-    "Buscando dispositivos LocalSend..."
-  );
+  console.log("Buscando dispositivos LocalSend...");
 
-  const handleResolved = (
-    service: any
-  ) => {
+  const handleResolved = (service: any) => {
     const address =
-      service.addresses?.find(
-        (ip: string) =>
-          ip.includes(".")
-      ) ||
+      service.addresses?.find((ip: string) => ip.includes(".")) ||
       service.addresses?.[0];
 
     if (!address) {
       return;
     }
 
-    const id =
-      service.txt?.id ||
-      service.fullName ||
-      service.name;
+    const id = service.txt?.id || service.fullName || service.name;
 
     /*
      * Ignoramos nuestro propio servicio.
+     *
+     * Chequeamos por ID (txt) Y por nombre publicado, porque en algunos
+     * dispositivos Android el TXT record puede no llegar bien parseado
+     * en el evento "resolved" y el chequeo por ID solo fallaría en
+     * silencio, mostrándonos a nosotros mismos en la lista.
      */
-    if (
-      service.txt?.id ===
-      DEVICE_ID
-    ) {
+    const isSelf =
+      service.txt?.id === DEVICE_ID || service.name === DEVICE_NAME;
+
+    if (isSelf) {
       return;
     }
 
     const device: DiscoveredDevice = {
       id,
-
-      name:
-        service.txt?.deviceName ||
-        service.name ||
-        "Dispositivo",
-
-      host:
-        service.host,
-
+      name: service.txt?.deviceName || service.name || "Dispositivo",
+      host: service.host,
       address,
-
-      port:
-        service.port,
-
-      type:
-        "localsend",
-
-      platform:
-        service.txt?.platform ||
-        "unknown",
-
-      version:
-        service.txt?.version,
+      port: service.port,
+      type: "localsend",
+      platform: service.txt?.platform || "unknown",
+      version: service.txt?.version,
     };
 
-    console.log(
-      "Dispositivo encontrado:",
-      device
-    );
+    console.log("Dispositivo encontrado:", device);
 
     onDeviceFound(device);
   };
 
-  const handleRemove = (
-    name: string
-  ) => {
-    console.log(
-      "Dispositivo eliminado:",
-      name
-    );
-
-    onDeviceRemoved?.(
-      name
-    );
+  const handleRemove = (name: string) => {
+    console.log("Dispositivo eliminado:", name);
+    onDeviceRemoved?.(name);
   };
 
-  zeroconf.on(
-    "resolved",
-    handleResolved
-  );
+  zeroconf.on("resolved", handleResolved);
+  zeroconf.on("remove", handleRemove);
 
-  zeroconf.on(
-    "remove",
-    handleRemove
-  );
-
-  zeroconf.on(
-    "error",
-    (error) => {
-      console.error(
-        "Error Zeroconf:",
-        error
-      );
-    }
-  );
+  zeroconf.on("error", (error) => {
+    console.error("Error Zeroconf:", error);
+  });
 
   /*
    * Android:
    * usamos DNSSD para discovery.
    */
-  zeroconf.scan(
-    SERVICE_TYPE,
-    SERVICE_PROTOCOL,
-    SERVICE_DOMAIN,
-    "DNSSD"
-  );
+  zeroconf.scan(SERVICE_TYPE, SERVICE_PROTOCOL, SERVICE_DOMAIN, "DNSSD");
 
   return () => {
     try {
-      zeroconf.stop(
-        "DNSSD"
-      );
+      zeroconf.stop("DNSSD");
     } catch (error) {
-      console.log(
-        "Error deteniendo discovery:",
-        error
-      );
+      console.log("Error deteniendo discovery:", error);
     }
 
     zeroconf.removeDeviceListeners();
@@ -232,13 +154,27 @@ export function startDiscovery(
 }
 
 /**
+ * Fuerza un nuevo ciclo de consultas mDNS en vez de esperar al backoff
+ * natural del protocolo. Útil para el botón "Buscar dispositivos":
+ * sin esto, apretar el botón solo limpiaba la lista pero nunca le
+ * pedía a la red que vuelva a contestar, por eso tardaba tanto.
+ */
+export function rescan() {
+  try {
+    zeroconf.stop("DNSSD");
+  } catch (error) {
+    console.log("Error deteniendo escaneo previo:", error);
+  }
+
+  zeroconf.scan(SERVICE_TYPE, SERVICE_PROTOCOL, SERVICE_DOMAIN, "DNSSD");
+}
+
+/**
  * Detiene todo Zeroconf.
  */
 export function stopDiscovery() {
   try {
-    zeroconf.stop(
-      "DNSSD"
-    );
+    zeroconf.stop("DNSSD");
   } catch {
     // ignorar
   }
@@ -251,14 +187,8 @@ export function stopDiscovery() {
  */
 export function stopPublishing() {
   try {
-    zeroconf.unpublishService(
-      DEVICE_NAME,
-      "DNSSD"
-    );
+    zeroconf.unpublishService(DEVICE_NAME, "DNSSD");
   } catch (error) {
-    console.log(
-      "Error deteniendo publicación:",
-      error
-    );
+    console.log("Error deteniendo publicación:", error);
   }
 }

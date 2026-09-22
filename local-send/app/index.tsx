@@ -3,6 +3,8 @@ import * as Notifications from "expo-notifications";
 import * as DocumentPicker from "expo-document-picker";
 
 import {
+  ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -22,340 +24,178 @@ import {
 import {
   startDiscovery,
   startPublishing,
+  getDeviceId,
+  getDeviceName,
+  rescan,
 } from "../service/discoveryService";
 
-import type {
-  DiscoveredDevice,
-} from "../service/discoveryService";
+import type { DiscoveredDevice } from "../service/discoveryService";
+
+import { connectAndSendFile } from "../service/localSendClient";
+
 Notifications.setNotificationHandler({
-  handleNotification:
-    async () => ({
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-      shouldShowBanner: true,
-      shouldShowList: true,
-    }),
+  handleNotification: async () => ({
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
 });
+
 export default function HomeScreen() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-
   const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
-
   const [searching, setSearching] = useState(true);
+  const [connectingId, setConnectingId] = useState<string | null>(null);
 
-  async function handleDevicePress(
-  device: DiscoveredDevice
-) {
-  try {
-    console.log(
-      "Conectando con:",
-      device.name
-    );
+  /**
+   * Botón "Conectar" de cada dispositivo.
+   * 1) Verifica que el otro lado responda el protocolo LocalSend real.
+   * 2) Pide el archivo a mandar.
+   * 3) Ejecuta el handshake (prepare-upload) + subida (upload).
+   */
+  async function handleConnectPress(device: DiscoveredDevice) {
+    if (connectingId) return; // evita doble tap mientras ya hay una conexión en curso
 
-    const response =
-      await fetch(
-        `http://${device.address}:${device.port}/api/connect`,
-        {
-          method: "POST",
+    setConnectingId(device.id);
 
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
+    try {
+      console.log("Conectando con:", device.name);
 
-          body: JSON.stringify({
-            deviceName:
-              "LocalSend Mobile",
-          }),
-        }
-      );
+      // Log temporal para confirmar que la IP resuelta por Zeroconf
+      // es la real de la PC (sacalo cuando confirmes que anda bien).
+      console.log("IP resuelta:", device.address, ":", device.port);
 
-    const data =
-      await response.json();
-
-    console.log(
-      "Respuesta conexión:",
-      data
-    );
-
-    if (!data.ok) {
-      console.error(
-        "No se pudo conectar"
-      );
-
-      return;
-    }
-
-    /*
-     * Conexión exitosa.
-     */
-    await showConnectionNotification(
-      device.name
-    );
-
-    /*
-     * Ahora seleccionamos el archivo.
-     */
-    await sendFileToDevice(
-      device
-    );
-  } catch (error) {
-    console.error(
-      "Error conectando:",
-      error
-    );
-  }
-}
-  async function sendFileToDevice(
-  device: DiscoveredDevice
-) {
-  try {
-    const result =
-      await DocumentPicker.getDocumentAsync({
+      const picked = await DocumentPicker.getDocumentAsync({
         multiple: false,
         copyToCacheDirectory: true,
       });
 
-    if (result.canceled) {
-      return;
-    }
+      if (picked.canceled) {
+        return;
+      }
 
-    const file = result.assets[0];
+      const file = picked.assets[0];
+      setSelectedFile(file.name);
 
-    console.log(
-      "Archivo seleccionado:",
-      file.name
-    );
-
-    const response =
-      await fetch(
-        `http://${device.address}:${device.port}/api/upload`,
+      const result = await connectAndSendFile(
+        device,
+        getDeviceName(),
         {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/octet-stream",
-
-            "X-File-Name":
-              encodeURIComponent(
-                file.name
-              ),
-
-            "X-File-Size":
-              String(file.size ?? 0),
-
-            "X-File-Type":
-              file.mimeType ??
-              "application/octet-stream",
-          },
-
-          body: await (
-            await fetch(file.uri)
-          ).blob(),
+          uri: file.uri,
+          name: file.name,
+          size: file.size ?? 0,
+          mimeType: file.mimeType ?? "application/octet-stream",
         }
       );
 
-    const data =
-      await response.json();
+      if (!result.ok) {
+        console.error("No se pudo conectar/enviar:", result.message);
+        Alert.alert("No se pudo conectar", result.message);
+        return;
+      }
 
-    console.log(
-      "Respuesta del servidor:",
-      data
-    );
-
-    if (data.ok) {
-      await showConnectionNotification(
-        `Archivo enviado a ${device.name}`
+      await showConnectionNotification(`Archivo enviado a ${device.name}`);
+    } catch (error) {
+      console.error("Error conectando:", error);
+      Alert.alert(
+        "Error",
+        error instanceof Error ? error.message : "Error desconocido."
       );
+    } finally {
+      setConnectingId(null);
     }
-  } catch (error) {
-    console.error(
-      "Error enviando archivo:",
-      error
-    );
   }
-}
-  async function connectToDevice(
-  device: DiscoveredDevice
-) {
-  try {
-    console.log(
-      "Conectando con:",
-      device.name
-    );
-
-    const response =
-      await fetch(
-        `http://${device.address}:${device.port}/api/connect`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify({
-            deviceName:
-              "LocalSend Mobile",
-          }),
-        }
-      );
-
-    const data =
-      await response.json();
-
-    console.log(
-      "Respuesta:",
-      data
-    );
-
-    if (data.ok) {
-      await showConnectionNotification(
-        device.name
-      );
-    }
-  } catch (error) {
-    console.error(
-      "Error conectando:",
-      error
-    );
-  }
-}
 
   async function handlePickFile() {
     try {
-      const result =
-        await DocumentPicker.getDocumentAsync({
-          multiple: false,
-        });
+      const result = await DocumentPicker.getDocumentAsync({
+        multiple: false,
+      });
 
       if (!result.canceled && result.assets.length > 0) {
         setSelectedFile(result.assets[0].name);
       }
     } catch (error) {
-      console.error(
-        "Error seleccionando archivo:",
-        error
-      );
+      console.error("Error seleccionando archivo:", error);
     }
   }
 
- useEffect(() => {
-  initializeNotifications();
+  useEffect(() => {
+    initializeNotifications();
 
-  /*
-   * Servidor HTTP del celular.
-   */
-  startLocalServer();
+    /*
+     * Servidor HTTP del celular.
+     */
+    startLocalServer();
 
-  /*
-   * Cuando OTRO dispositivo intenta conectarse
-   * con este celular.
-   */
-  setConnectionHandler(
-    async (deviceName) => {
-      console.log(
-        "Conexión recibida desde:",
-        deviceName
-      );
+    /*
+     * Cuando OTRO dispositivo intenta conectarse con este celular.
+     */
+    setConnectionHandler(async (deviceName) => {
+      console.log("Conexión recibida desde:", deviceName);
+      await showConnectionNotification(deviceName);
+    });
 
-      await showConnectionNotification(
-        deviceName
-      );
-    }
-  );
+    /*
+     * Publicamos el dispositivo.
+     */
+    startPublishing();
 
-  /*
-   * Publicamos el dispositivo.
-   */
-  startPublishing();
-
-  /*
-   * Buscamos otros dispositivos.
-   */
-  const cleanup =
-    startDiscovery(
+    /*
+     * Buscamos otros dispositivos.
+     */
+    const cleanup = startDiscovery(
       (device) => {
-        console.log(
-          "Dispositivo encontrado:",
-          device
-        );
+        // Defensa extra: si por algún motivo el filtro de
+        // discoveryService no lo agarró, lo descartamos acá también.
+        if (device.id === getDeviceId()) {
+          return;
+        }
 
-        setDevices(
-          (current) => {
-            const exists =
-              current.some(
-                (item) =>
-                  item.id ===
-                  device.id
-              );
+        console.log("Dispositivo encontrado:", device);
 
-            if (exists) {
-              return current.map(
-                (item) =>
-                  item.id ===
-                  device.id
-                    ? device
-                    : item
-              );
-            }
+        setDevices((current) => {
+          const exists = current.some((item) => item.id === device.id);
 
-            return [
-              ...current,
-              device,
-            ];
+          if (exists) {
+            return current.map((item) =>
+              item.id === device.id ? device : item
+            );
           }
-        );
+
+          return [...current, device];
+        });
 
         setSearching(false);
       },
-
       (id) => {
-        setDevices(
-          (current) =>
-            current.filter(
-              (device) =>
-                device.id !== id
-            )
-        );
+        setDevices((current) => current.filter((device) => device.id !== id));
       }
     );
 
-  return () => {
-    cleanup();
+    return () => {
+      cleanup();
+      stopLocalServer();
+    };
+  }, []);
 
-    stopLocalServer();
-  };
-}, []);
   function searchDevices() {
     /*
-     * No creamos otro listener.
-     *
-     * El discovery ya está ejecutándose
-     * desde el useEffect.
-     *
-     * Solo limpiamos la lista y mostramos
-     * nuevamente el estado de búsqueda.
+     * Limpiamos la lista Y forzamos un nuevo ciclo de consultas mDNS,
+     * en vez de esperar al backoff natural del protocolo.
      */
     setDevices([]);
     setSearching(true);
+    rescan();
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>
-        LocalSend Clone
-      </Text>
+      <Text style={styles.title}>LocalSend Clone</Text>
 
-      <Pressable
-        style={styles.button}
-        onPress={handlePickFile}
-      >
-        <Text style={styles.buttonText}>
-          Elegir archivo
-        </Text>
+      <Pressable style={styles.button} onPress={handlePickFile}>
+        <Text style={styles.buttonText}>Elegir archivo</Text>
       </Pressable>
 
       {selectedFile && (
@@ -364,57 +204,50 @@ export default function HomeScreen() {
         </Text>
       )}
 
-      <Pressable
-        style={styles.button}
-        onPress={searchDevices}
-      >
+      <Pressable style={styles.button} onPress={searchDevices}>
         <Text style={styles.buttonText}>
-          {searching
-            ? "Buscando dispositivos..."
-            : "Buscar dispositivos"}
+          {searching ? "Buscando dispositivos..." : "Buscar dispositivos"}
         </Text>
       </Pressable>
 
-      <Text style={styles.sectionTitle}>
-        Dispositivos cercanos
-      </Text>
+      <Text style={styles.sectionTitle}>Dispositivos cercanos</Text>
 
       <FlatList
         data={devices}
         keyExtractor={(item) => item.id}
         contentContainerStyle={
-          devices.length === 0
-            ? styles.emptyContainer
-            : undefined
+          devices.length === 0 ? styles.emptyContainer : undefined
         }
         ListEmptyComponent={
-          <Text style={styles.empty}>
-            No se encontraron dispositivos.
-          </Text>
+          <Text style={styles.empty}>No se encontraron dispositivos.</Text>
         }
         renderItem={({ item }) => (
-        <Pressable
-  style={styles.deviceCard}
-  onPress={() =>
-    handleDevicePress(item)
-  }
->
-
+          <View style={styles.deviceCard}>
             <Text style={styles.deviceName}>
-              {item.platform === "windows"
-                ? "💻"
-                : "📱"}{" "}
-              {item.name}
+              {item.platform === "windows" ? "💻" : "📱"} {item.name}
             </Text>
 
             <Text style={styles.deviceInfo}>
               {item.address}:{item.port}
             </Text>
 
-            <Text style={styles.deviceInfo}>
-              {item.platform}
-            </Text>
-          </Pressable>
+            <Text style={styles.deviceInfo}>{item.platform}</Text>
+
+            <Pressable
+              style={[
+                styles.connectButton,
+                connectingId === item.id && styles.connectButtonDisabled,
+              ]}
+              disabled={connectingId === item.id}
+              onPress={() => handleConnectPress(item)}
+            >
+              {connectingId === item.id ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text style={styles.connectButtonText}>Conectar</Text>
+              )}
+            </Pressable>
+          </View>
         )}
       />
     </View>
@@ -481,6 +314,25 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
     fontSize: 14,
     marginTop: 2,
+  },
+
+  connectButton: {
+    backgroundColor: "#16A34A",
+    padding: 12,
+    borderRadius: 10,
+    marginTop: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  connectButtonDisabled: {
+    backgroundColor: "#166534",
+  },
+
+  connectButtonText: {
+    color: "white",
+    fontWeight: "600",
+    fontSize: 15,
   },
 
   emptyContainer: {

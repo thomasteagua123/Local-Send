@@ -170,3 +170,100 @@ main h2 {
   margin: auto;
   line-height: 1.5;
 }
+@keyframes progressShimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.progressBarContainer {
+  width: 100%;
+  max-width: 340px;
+  height: 10px;
+  background-color: #0f172a;
+  border-radius: 9999px;
+  margin: 16px auto 0 auto;
+  overflow: hidden;
+  border: 1px solid #334155;
+}
+
+.progressBarFill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6 0%, #34d399 50%, #3b82f6 100%);
+  background-size: 200% 100%;
+  border-radius: 9999px;
+  transition: width 0.15s ease-out;
+  animation: progressShimmer 1.6s linear infinite;
+}
+
+.historySection {
+  margin-top: 28px;
+}
+
+.historyHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.historyItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+
+.historyItemIcon {
+  font-size: 1.25rem;
+}
+
+.historyItemInfo {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.historyItemInfo strong {
+  color: #f8fafc;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.historyItemInfo span {
+  color: #94a3b8;
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.historyItemBadge {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 9999px;
+}
+
+.badgeOk {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+
+.badgeErr {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}

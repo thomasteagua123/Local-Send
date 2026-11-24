@@ -109,10 +109,18 @@ async function publishDevice(port) {
 async function startDiscovery(onDeviceFound, onDeviceRemoved) {
   await initBonjour();
 
+  // BÚSQUEDA PROFUNDA: Destruimos el navegador viejo por completo si existía
   if (browser) {
-    browser.stop();
+    try {
+      browser.stop();
+    } catch {}
+    browser = null;
   }
 
+  // Pequeña pausa técnica opcional para asegurar la liberación del socket mDNS
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  // Creamos un buscador totalmente fresco para forzar al router a re-consultar la red
   browser = bonjour.find({
     type: SERVICE_TYPE,
     protocol: SERVICE_PROTOCOL,
@@ -158,31 +166,12 @@ async function startDiscovery(onDeviceFound, onDeviceRemoved) {
     };
 
     console.log(
-      "Dispositivo encontrado:",
+      "Dispositivo encontrado (Búsqueda profunda):",
       device
     );
 
     onDeviceFound(device);
-    console.log(
-  "=============================="
-);
-
-console.log(
-  "SERVICIO MDNS RECIBIDO:"
-);
-
-console.log(
-  JSON.stringify(
-    service,
-    null,
-    2
-  )
-);
-
-console.log(
-  "=============================="
-);
-});
+  });
 
   browser.on("down", (service) => {
     const id =
@@ -206,7 +195,7 @@ console.log(
   });
 
   console.log(
-    "Buscando dispositivos LocalSend..."
+    "🔍 Búsqueda profunda de dispositivos LocalSend iniciada..."
   );
 
   return {
@@ -221,7 +210,9 @@ console.log(
 
 async function stopDiscovery() {
   if (browser) {
-    browser.stop();
+    try {
+      browser.stop();
+    } catch {}
     browser = null;
   }
 }

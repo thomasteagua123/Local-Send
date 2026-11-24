@@ -185,7 +185,7 @@ function createWindow() {
 
 /*
  * ==================================================
- * CONEXIÓN
+ * CONEXIÓN BILATERAL
  * ==================================================
  */
 
@@ -209,7 +209,7 @@ function connectToDevice(
       }
 
       console.log(
-        `Conectando con ${device.name}`
+        `[PC] 🔗 Iniciando conexión bilateral con ${device.name} (${device.address}:${device.port})`
       );
 
       const postData =
@@ -264,17 +264,24 @@ function connectToDevice(
                   200;
 
                 if (ok) {
+                  console.log(
+                    `[PC] ✅ Conexión bilateral establecida con éxito con ${device.name}`
+                  );
+
                   showConnectionNotification(
                     device.name
+                  );
+                } else {
+                  console.error(
+                    `[PC] ❌ El dispositivo rechazó la conexión (HTTP ${response.statusCode}):`,
+                    body
                   );
                 }
 
                 resolve({
                   ok,
-
                   status:
                     response.statusCode,
-
                   body,
                 });
               }
@@ -285,12 +292,17 @@ function connectToDevice(
       request.on(
         "timeout",
         () => {
+          console.error(
+            "[PC] ❌ Tiempo de espera agotado conectando con:",
+            device.name
+          );
+
           request.destroy();
 
           resolve({
             ok: false,
             error:
-              "El dispositivo no respondió.",
+              "El dispositivo no respondió a la solicitud de conexión.",
           });
         }
       );
@@ -298,6 +310,11 @@ function connectToDevice(
       request.on(
         "error",
         (error) => {
+          console.error(
+            "[PC] ❌ Error en la solicitud de conexión:",
+            error
+          );
+
           resolve({
             ok: false,
             error:
@@ -350,7 +367,7 @@ ipcMain.handle(
 
 /*
  * ==================================================
- * ENVIAR ARCHIVO
+ * ENVIAR ARCHIVO (CON PROGRESO)
  * ==================================================
  */
 
@@ -415,11 +432,7 @@ function sendFileToDevice(
         );
 
       console.log(
-        `Enviando ${fileName} a ${device.name}`
-      );
-
-      console.log(
-        `Tamaño: ${fileStats.size} bytes`
+        `\n[PC] 🚀 Iniciando envío de "${fileName}" a ${device.name} (${fileStats.size} bytes)...`
       );
 
       const request =
@@ -483,7 +496,7 @@ function sendFileToDevice(
 
                 if (ok) {
                   console.log(
-                    `Archivo enviado correctamente: ${fileName}`
+                    `[PC] ✅ ¡Archivo enviado y recibido con éxito por el celular! -> ${fileName}`
                   );
 
                   showFileNotification(
@@ -500,7 +513,7 @@ function sendFileToDevice(
                   });
                 } else {
                   console.error(
-                    "El dispositivo rechazó el archivo:",
+                    `[PC] ❌ El celular rechazó el archivo (HTTP ${response.statusCode}):`,
                     body
                   );
 
@@ -523,7 +536,7 @@ function sendFileToDevice(
         "timeout",
         () => {
           console.error(
-            "Tiempo de espera agotado enviando:",
+            "[PC] ❌ Tiempo de espera agotado enviando:",
             fileName
           );
 
@@ -542,7 +555,7 @@ function sendFileToDevice(
         "error",
         (error) => {
           console.error(
-            "Error enviando archivo:",
+            "[PC] ❌ Error enviando archivo:",
             error
           );
 
@@ -557,14 +570,40 @@ function sendFileToDevice(
 
       const fileStream =
         fs.createReadStream(
-          filePath
+          filePath,
+          { highWaterMark: 64 * 1024 }
         );
+
+      let bytesSent = 0;
+
+      fileStream.on(
+        "data",
+        (chunk) => {
+          bytesSent += chunk.length;
+          const percent = Math.min(
+            100,
+            Math.round(
+              (bytesSent / fileStats.size) * 100
+            )
+          );
+
+          sendToRenderer(
+            "file:progress",
+            {
+              fileName,
+              percent,
+              bytesSent,
+              totalBytes: fileStats.size,
+            }
+          );
+        }
+      );
 
       fileStream.on(
         "error",
         (error) => {
           console.error(
-            "Error leyendo archivo:",
+            "[PC] ❌ Error leyendo archivo local:",
             error
           );
 

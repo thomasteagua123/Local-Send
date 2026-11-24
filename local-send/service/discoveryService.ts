@@ -68,15 +68,8 @@ export function startDiscovery(
   // Limpiamos listeners previos para evitar duplicados
   zeroconf.removeAllListeners();
 
-  // 1. Cuando se detecta o actualiza la red, pedimos resolver el servicio
-  zeroconf.on("update", () => {
-    const services = zeroconf.getServices();
-    Object.keys(services).forEach((name) => {
-      zeroconf.resolve(name, SERVICE_TYPE, SERVICE_PROTOCOL, SERVICE_DOMAIN);
-    });
-  });
-
-  // 2. Cuando el servicio finalmente se resuelve en IP y datos TXT
+  // La librería resuelve los servicios sola y dispara "resolved"
+  // con IP, puerto y TXT. No hace falta llamar a resolve() a mano.
   zeroconf.on("resolved", (service: any) => {
     if (!service) return;
 

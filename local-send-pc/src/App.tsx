@@ -1,4 +1,5 @@
 import {
+  DragEvent,
   useEffect,
   useState,
 } from "react";
@@ -13,30 +14,35 @@ interface Device {
   version?: string;
 }
 
+interface SendResult {
+  ok: boolean;
+  fileName?: string;
+  error?: string;
+}
+
 function App() {
-  const [
-    devices,
-    setDevices,
-  ] = useState<Device[]>([]);
+  const [devices, setDevices] =
+    useState<Device[]>([]);
 
-  const [
-    searching,
-    setSearching,
-  ] = useState(true);
+  const [searching, setSearching] =
+    useState(true);
 
-  const [
-    connecting,
-    setConnecting,
-  ] = useState<string | null>(
-    null
-  );
+  const [connecting, setConnecting] =
+    useState<string | null>(null);
 
-  const [
-    status,
-    setStatus,
-  ] = useState(
-    "Buscando dispositivos..."
-  );
+  const [selectedDevice, setSelectedDevice] =
+    useState<Device | null>(null);
+
+  const [sending, setSending] =
+    useState(false);
+
+  const [status, setStatus] =
+    useState(
+      "Buscando dispositivos..."
+    );
+
+  const [dragging, setDragging] =
+    useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -50,19 +56,14 @@ function App() {
 
         setDevices(
           existing.filter(
-            (device) =>
-              device.platform !==
-              "windows" ||
-              device.id !==
-                "local-pc"
+            (device: Device) =>
+              device.id !== "local-pc"
           )
         );
 
         setSearching(false);
       } catch (error) {
-        console.error(
-          error
-        );
+        console.error(error);
 
         if (mounted) {
           setSearching(false);
@@ -78,32 +79,28 @@ function App() {
 
     const removeFound =
       window.localSend.onDeviceFound(
-        (device) => {
-          setDevices(
-            (current) => {
-              const exists =
-                current.some(
-                  (item) =>
-                    item.id ===
-                    device.id
-                );
+        (device: Device) => {
+          setDevices((current) => {
+            const exists =
+              current.some(
+                (item) =>
+                  item.id === device.id
+              );
 
-              if (exists) {
-                return current.map(
-                  (item) =>
-                    item.id ===
-                    device.id
-                      ? device
-                      : item
-                );
-              }
-
-              return [
-                ...current,
-                device,
-              ];
+            if (exists) {
+              return current.map(
+                (item) =>
+                  item.id === device.id
+                    ? device
+                    : item
+              );
             }
-          );
+
+            return [
+              ...current,
+              device,
+            ];
+          });
 
           setSearching(false);
 
@@ -115,13 +112,19 @@ function App() {
 
     const removeRemoved =
       window.localSend.onDeviceRemoved(
-        (id) => {
-          setDevices(
+        (id: string) => {
+          setDevices((current) =>
+            current.filter(
+              (device) =>
+                device.id !== id
+            )
+          );
+
+          setSelectedDevice(
             (current) =>
-              current.filter(
-                (device) =>
-                  device.id !== id
-              )
+              current?.id === id
+                ? null
+                : current
           );
         }
       );
@@ -145,23 +148,21 @@ function App() {
       const found =
         await window.localSend.searchDevices();
 
-      setDevices(
+      const filtered =
         found.filter(
-          (device) =>
-            device.id !==
-            "local-pc"
-        )
-      );
+          (device: Device) =>
+            device.id !== "local-pc"
+        );
+
+      setDevices(filtered);
 
       setStatus(
-        found.length > 0
-          ? `${found.length} dispositivo(s) encontrado(s)`
+        filtered.length > 0
+          ? `${filtered.length} dispositivo(s) encontrado(s)`
           : "No se encontraron dispositivos"
       );
     } catch (error) {
-      console.error(
-        error
-      );
+      console.error(error);
 
       setStatus(
         "Error buscando dispositivos"
@@ -171,12 +172,16 @@ function App() {
     }
   }
 
-  async function connect(
+  async function selectDevice(
     device: Device
   ) {
-    setConnecting(
-      device.id
-    );
+    if (connecting || sending) {
+      return;
+    }
+
+    setSelectedDevice(device);
+
+    setConnecting(device.id);
 
     setStatus(
       `Conectando con ${device.name}...`
@@ -192,14 +197,12 @@ function App() {
         setStatus(
           `Conectado con ${device.name}`
         );
-
-        alert(
-          `Conexión exitosa con ${device.name}`
-        );
       } else {
         setStatus(
           `No se pudo conectar con ${device.name}`
         );
+
+        setSelectedDevice(null);
 
         alert(
           `No se pudo conectar con ${
@@ -211,18 +214,198 @@ function App() {
         );
       }
     } catch (error) {
-      console.error(
-        error
-      );
+      console.error(error);
+
+      setSelectedDevice(null);
 
       setStatus(
         "Error de conexión"
       );
     } finally {
-      setConnecting(
-        null
+      setConnecting(null);
+    }
+  }
+
+  async function chooseFiles() {
+    if (!selectedDevice) {
+      alert(
+        "Primero seleccioná un dispositivo."
+      );
+
+      return;
+    }
+
+    try {
+      const filePaths =
+        await window.localSend.selectFiles();
+
+      if (
+        !filePaths ||
+        filePaths.length === 0
+      ) {
+        return;
+      }
+
+      await sendFiles(filePaths);
+    } catch (error) {
+      console.error(error);
+
+      setStatus(
+        "No se pudieron seleccionar los archivos."
       );
     }
+  }
+
+  async function sendFiles(
+    filePaths: string[]
+  ) {
+    if (!selectedDevice) {
+      alert(
+        "Primero seleccioná un dispositivo."
+      );
+
+      return;
+    }
+
+    if (
+      !filePaths ||
+      filePaths.length === 0
+    ) {
+      return;
+    }
+
+    setSending(true);
+
+    let enviados = 0;
+
+    try {
+      for (
+        const filePath of filePaths
+      ) {
+        const fileName =
+          filePath
+            .split("\\")
+            .pop() ||
+          filePath
+            .split("/")
+            .pop() ||
+          "archivo";
+
+        setStatus(
+          `Enviando ${fileName}...`
+        );
+
+        const result: SendResult =
+          await window.localSend.sendFile(
+            selectedDevice,
+            filePath
+          );
+
+        if (!result.ok) {
+          throw new Error(
+            result.error ||
+              `No se pudo enviar ${fileName}`
+          );
+        }
+
+        enviados++;
+      }
+
+      setStatus(
+        enviados === 1
+          ? "Archivo enviado correctamente"
+          : `${enviados} archivos enviados correctamente`
+      );
+    } catch (error) {
+      console.error(error);
+
+      setStatus(
+        error instanceof Error
+          ? error.message
+          : "Error enviando archivos"
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleDrop(
+    event: DragEvent<HTMLDivElement>
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    setDragging(false);
+
+    if (
+      !selectedDevice
+    ) {
+      alert(
+        "Primero seleccioná un dispositivo."
+      );
+
+      return;
+    }
+
+    const files =
+      Array.from(
+        event.dataTransfer.files
+      );
+
+    if (files.length === 0) {
+      return;
+    }
+
+    const filePaths =
+      files
+        .map(
+          (file) =>
+            window.localSend.getFilePath(
+              file
+            )
+        )
+        .filter(
+          (
+            filePath
+          ): filePath is string =>
+            Boolean(filePath)
+        );
+
+    if (
+      filePaths.length === 0
+    ) {
+      setStatus(
+        "No se pudieron obtener los archivos."
+      );
+
+      return;
+    }
+
+    await sendFiles(
+      filePaths
+    );
+  }
+
+  function handleDragOver(
+    event: DragEvent<HTMLDivElement>
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!selectedDevice) {
+      return;
+    }
+
+    setDragging(true);
+  }
+
+  function handleDragLeave(
+    event: DragEvent<HTMLDivElement>
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    setDragging(false);
   }
 
   return (
@@ -243,7 +426,9 @@ function App() {
           className="refreshButton"
           onClick={refresh}
           disabled={
-            searching
+            searching ||
+            connecting !== null ||
+            sending
           }
         >
           {searching
@@ -253,7 +438,13 @@ function App() {
       </header>
 
       <section className="status">
-        <div className="statusDot" />
+        <div
+          className={`statusDot ${
+            sending
+              ? "statusSending"
+              : ""
+          }`}
+        />
 
         <span>
           {status}
@@ -286,70 +477,192 @@ function App() {
         ) : (
           <div className="devices">
             {devices.map(
-              (device) => (
-                <article
-                  className="deviceCard"
-                  key={
-                    device.id
-                  }
-                  onClick={() =>
-                    connect(
-                      device
-                    )
-                  }
-                >
-                  <div className="deviceIcon">
-                    {device.platform ===
-                    "windows"
-                      ? "💻"
-                      : "📱"}
-                  </div>
+              (device) => {
+                const isSelected =
+                  selectedDevice?.id ===
+                  device.id;
 
-                  <div className="deviceInfo">
-                    <h3>
-                      {device.name}
-                    </h3>
+                const isConnecting =
+                  connecting ===
+                  device.id;
 
-                    <p>
-                      {
-                        device.address
-                      }
-                      :
-                      {
-                        device.port
-                      }
-                    </p>
-
-                    <span>
-                      {device.platform}
-                    </span>
-                  </div>
-
-                  <button
-                    className="connectButton"
-                    disabled={
-                      connecting ===
+                return (
+                  <article
+                    className={`deviceCard ${
+                      isSelected
+                        ? "selected"
+                        : ""
+                    }`}
+                    key={
                       device.id
                     }
-                    onClick={(
-                      event
-                    ) => {
-                      event.stopPropagation();
-
-                      connect(
+                    onClick={() =>
+                      selectDevice(
                         device
-                      );
-                    }}
+                      )
+                    }
                   >
-                    {connecting ===
-                    device.id
-                      ? "Conectando..."
-                      : "Conectar"}
-                  </button>
-                </article>
-              )
+                    <div className="deviceIcon">
+                      {device.platform ===
+                      "windows"
+                        ? "💻"
+                        : "📱"}
+                    </div>
+
+                    <div className="deviceInfo">
+                      <h3>
+                        {
+                          device.name
+                        }
+                      </h3>
+
+                      <p>
+                        {
+                          device.address
+                        }
+                        :
+                        {
+                          device.port
+                        }
+                      </p>
+
+                      <span>
+                        {
+                          device.platform
+                        }
+                      </span>
+                    </div>
+
+                    <div className="deviceAction">
+                      {isConnecting ? (
+                        <span className="connectingText">
+                          Conectando...
+                        </span>
+                      ) : isSelected ? (
+                        <span className="selectedText">
+                          ✓ Seleccionado
+                        </span>
+                      ) : (
+                        <button
+                          className="connectButton"
+                          disabled={
+                            connecting !==
+                              null ||
+                            sending
+                          }
+                          onClick={(
+                            event
+                          ) => {
+                            event.stopPropagation();
+
+                            selectDevice(
+                              device
+                            );
+                          }}
+                        >
+                          Seleccionar
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                );
+              }
             )}
           </div>
+        )}
+
+        {selectedDevice && (
+          <section className="sendSection">
+            <div className="sendHeader">
+              <div>
+                <h2>
+                  Enviar archivos
+                </h2>
+
+                <p>
+                  Destino:{" "}
+                  <strong>
+                    {
+                      selectedDevice.name
+                    }
+                  </strong>
+                </p>
+              </div>
+            </div>
+
+            <div
+              className={`dropZone ${
+                dragging
+                  ? "dragging"
+                  : ""
+              } ${
+                sending
+                  ? "sending"
+                  : ""
+              }`}
+              onDragOver={
+                handleDragOver
+              }
+              onDragEnter={
+                handleDragOver
+              }
+              onDragLeave={
+                handleDragLeave
+              }
+              onDrop={
+                handleDrop
+              }
+            >
+              <div className="dropIcon">
+                {sending
+                  ? "📤"
+                  : dragging
+                  ? "📥"
+                  : "📁"}
+              </div>
+
+              <h3>
+                {sending
+                  ? "Enviando archivos..."
+                  : dragging
+                  ? "Soltá los archivos aquí"
+                  : "Arrastrá archivos aquí"}
+              </h3>
+
+              {!sending && (
+                <>
+                  <p>
+                    o buscá los archivos
+                    manualmente
+                  </p>
+
+                  <button
+                    className="browseButton"
+                    onClick={
+                      chooseFiles
+                    }
+                    disabled={
+                      sending
+                    }
+                  >
+                    📂 Buscar archivos
+                  </button>
+                </>
+              )}
+            </div>
+
+            <button
+              className="changeDeviceButton"
+              onClick={() =>
+                setSelectedDevice(
+                  null
+                )
+              }
+              disabled={sending}
+            >
+              Cambiar dispositivo
+            </button>
+          </section>
         )}
       </main>
     </div>

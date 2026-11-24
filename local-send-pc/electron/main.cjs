@@ -3,9 +3,12 @@ const {
   BrowserWindow,
   ipcMain,
   Notification,
+  dialog,
 } = require("electron");
+
 const path = require("node:path");
 const http = require("node:http");
+const fs = require("node:fs");
 
 const {
   createServer,
@@ -23,10 +26,16 @@ let mainWindow = null;
 
 const devices = new Map();
 
-/**
- * Envía un evento al renderer.
+/*
+ * ==================================================
+ * UTILIDADES
+ * ==================================================
  */
-function sendToRenderer(channel, data) {
+
+function sendToRenderer(
+  channel,
+  data
+) {
   if (
     mainWindow &&
     !mainWindow.isDestroyed()
@@ -37,6 +46,7 @@ function sendToRenderer(channel, data) {
     );
   }
 }
+
 function showConnectionNotification(
   deviceName
 ) {
@@ -51,27 +61,111 @@ function showConnectionNotification(
     body: `Conexión establecida con ${deviceName}`,
   }).show();
 }
-/**
- * Crea la ventana de Electron.
+
+function showFileNotification(
+  deviceName,
+  fileName
+) {
+  if (
+    !Notification.isSupported()
+  ) {
+    return;
+  }
+
+  new Notification({
+    title: "LocalSend",
+    body: `${fileName} enviado a ${deviceName}`,
+  }).show();
+}
+
+function getFileName(
+  filePath
+) {
+  return (
+    path.basename(filePath) ||
+    "archivo"
+  );
+}
+
+function getMimeType(
+  filePath
+) {
+  const extension =
+    path
+      .extname(filePath)
+      .toLowerCase();
+
+  const mimeTypes = {
+    ".txt": "text/plain",
+    ".html": "text/html",
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".json": "application/json",
+
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+
+    ".pdf": "application/pdf",
+
+    ".zip": "application/zip",
+    ".rar":
+      "application/vnd.rar",
+
+    ".doc":
+      "application/msword",
+
+    ".docx":
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+
+    ".xls":
+      "application/vnd.ms-excel",
+
+    ".xlsx":
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  };
+
+  return (
+    mimeTypes[extension] ||
+    "application/octet-stream"
+  );
+}
+
+/*
+ * ==================================================
+ * VENTANA
+ * ==================================================
  */
+
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 750,
+  mainWindow =
+    new BrowserWindow({
+      width: 1100,
+      height: 750,
 
-    minWidth: 850,
-    minHeight: 600,
+      minWidth: 850,
+      minHeight: 600,
 
-    webPreferences: {
-      preload: path.join(
-        __dirname,
-        "preload.cjs"
-      ),
+      webPreferences: {
+        preload: path.join(
+          __dirname,
+          "preload.cjs"
+        ),
 
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
 
   if (!app.isPackaged) {
     mainWindow.loadURL(
@@ -89,10 +183,15 @@ function createWindow() {
   }
 }
 
-/**
- * Intenta conectarse con otro dispositivo.
+/*
+ * ==================================================
+ * CONEXIÓN
+ * ==================================================
  */
-function connectToDevice(device) {
+
+function connectToDevice(
+  device
+) {
   return new Promise(
     (resolve) => {
       if (
@@ -216,15 +315,297 @@ function connectToDevice(device) {
   );
 }
 
+/*
+ * ==================================================
+ * SELECCIONAR ARCHIVOS
+ * ==================================================
+ */
+
+ipcMain.handle(
+  "files:select",
+  async () => {
+    const result =
+      await dialog.showOpenDialog(
+        mainWindow,
+        {
+          title:
+            "Seleccionar archivos",
+
+          properties: [
+            "openFile",
+            "multiSelections",
+          ],
+        }
+      );
+
+    if (
+      result.canceled
+    ) {
+      return [];
+    }
+
+    return result.filePaths;
+  }
+);
 
 /*
  * ==================================================
- * IPC
+ * ENVIAR ARCHIVO
  * ==================================================
- *
- * IMPORTANTÍSIMO:
- * Los handlers se registran ANTES de crear
- * la ventana de Electron.
+ */
+
+function sendFileToDevice(
+  device,
+  filePath
+) {
+  return new Promise(
+    (resolve) => {
+      if (
+        !device ||
+        !device.address ||
+        !device.port
+      ) {
+        resolve({
+          ok: false,
+          error:
+            "Dispositivo inválido.",
+        });
+
+        return;
+      }
+
+      if (
+        !filePath ||
+        !fs.existsSync(filePath)
+      ) {
+        resolve({
+          ok: false,
+          error:
+            "El archivo no existe.",
+        });
+
+        return;
+      }
+
+      let fileStats;
+
+      try {
+        fileStats =
+          fs.statSync(
+            filePath
+          );
+      } catch (error) {
+        resolve({
+          ok: false,
+          error:
+            "No se pudo leer el archivo.",
+        });
+
+        return;
+      }
+
+      const fileName =
+        getFileName(
+          filePath
+        );
+
+      const mimeType =
+        getMimeType(
+          filePath
+        );
+
+      console.log(
+        `Enviando ${fileName} a ${device.name}`
+      );
+
+      console.log(
+        `Tamaño: ${fileStats.size} bytes`
+      );
+
+      const request =
+        http.request(
+          {
+            hostname:
+              device.address,
+
+            port:
+              device.port,
+
+            path:
+              "/api/upload",
+
+            method:
+              "POST",
+
+            timeout:
+              120000,
+
+            headers: {
+              "Content-Type":
+                "application/octet-stream",
+
+              "Content-Length":
+                fileStats.size,
+
+              "X-File-Name":
+                encodeURIComponent(
+                  fileName
+                ),
+
+              "X-File-Size":
+                String(
+                  fileStats.size
+                ),
+
+              "X-File-Type":
+                mimeType,
+            },
+          },
+
+          (response) => {
+            let body = "";
+
+            response.on(
+              "data",
+              (chunk) => {
+                body += chunk;
+              }
+            );
+
+            response.on(
+              "end",
+              () => {
+                const ok =
+                  response.statusCode >=
+                    200 &&
+                  response.statusCode <
+                    300;
+
+                if (ok) {
+                  console.log(
+                    `Archivo enviado correctamente: ${fileName}`
+                  );
+
+                  showFileNotification(
+                    device.name,
+                    fileName
+                  );
+
+                  resolve({
+                    ok: true,
+                    fileName,
+                    status:
+                      response.statusCode,
+                    body,
+                  });
+                } else {
+                  console.error(
+                    "El dispositivo rechazó el archivo:",
+                    body
+                  );
+
+                  resolve({
+                    ok: false,
+                    fileName,
+                    status:
+                      response.statusCode,
+                    error:
+                      `El dispositivo respondió con HTTP ${response.statusCode}`,
+                    body,
+                  });
+                }
+              }
+            );
+          }
+        );
+
+      request.on(
+        "timeout",
+        () => {
+          console.error(
+            "Tiempo de espera agotado enviando:",
+            fileName
+          );
+
+          request.destroy();
+
+          resolve({
+            ok: false,
+            fileName,
+            error:
+              "Tiempo de espera agotado al enviar el archivo.",
+          });
+        }
+      );
+
+      request.on(
+        "error",
+        (error) => {
+          console.error(
+            "Error enviando archivo:",
+            error
+          );
+
+          resolve({
+            ok: false,
+            fileName,
+            error:
+              error.message,
+          });
+        }
+      );
+
+      const fileStream =
+        fs.createReadStream(
+          filePath
+        );
+
+      fileStream.on(
+        "error",
+        (error) => {
+          console.error(
+            "Error leyendo archivo:",
+            error
+          );
+
+          request.destroy();
+
+          resolve({
+            ok: false,
+            fileName,
+            error:
+              error.message,
+          });
+        }
+      );
+
+      fileStream.pipe(
+        request
+      );
+    }
+  );
+}
+
+ipcMain.handle(
+  "file:send",
+  async (
+    _event,
+    {
+      device,
+      filePath,
+    }
+  ) => {
+    return await sendFileToDevice(
+      device,
+      filePath
+    );
+  }
+);
+
+/*
+ * ==================================================
+ * IPC DISPOSITIVOS
+ * ==================================================
  */
 
 ipcMain.handle(
@@ -249,8 +630,7 @@ ipcMain.handle(
   "device:me",
   () => {
     return {
-      id:
-        "local-pc",
+      id: "local-pc",
 
       name:
         `LocalSend PC - ${getLocalIPv4()}`,
@@ -269,13 +649,15 @@ ipcMain.handle(
 
 ipcMain.handle(
   "device:connect",
-  async (_event, device) => {
+  async (
+    _event,
+    device
+  ) => {
     return await connectToDevice(
       device
     );
   }
 );
-
 
 /*
  * ==================================================
@@ -285,9 +667,6 @@ ipcMain.handle(
 
 app.whenReady().then(
   async () => {
-    /*
-     * Primero iniciamos la red.
-     */
     try {
       const port =
         await createServer();
@@ -297,18 +676,11 @@ app.whenReady().then(
           port
         );
 
-      /*
-       * Guardamos nuestra PC solamente
-       * internamente.
-       */
       console.log(
         "PC publicada:",
         me
       );
 
-      /*
-       * Iniciamos descubrimiento.
-       */
       await startDiscovery(
         (device) => {
           console.log(
@@ -381,9 +753,6 @@ app.whenReady().then(
       );
     }
 
-    /*
-     * Ahora sí creamos la ventana.
-     */
     createWindow();
 
     app.on(

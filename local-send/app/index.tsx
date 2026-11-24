@@ -43,50 +43,84 @@ Notifications.setNotificationHandler({
 });
 
 export default function HomeScreen() {
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{
+    uri: string;
+    name: string;
+    size: number;
+    mimeType: string;
+  } | null>(null);
   const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
   const [searching, setSearching] = useState(true);
   const [connectingId, setConnectingId] = useState<string | null>(null);
 
   /**
+   * Permite seleccionar previamente un archivo desde el sistema de archivos del celular.
+   */
+  async function handlePickFile() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets.length > 0) {
+        const file = result.assets[0];
+        setSelectedFile({
+          uri: file.uri,
+          name: file.name,
+          size: file.size ?? 0,
+          mimeType: file.mimeType ?? "application/octet-stream",
+        });
+      }
+    } catch (error) {
+      console.error("Error seleccionando archivo:", error);
+      Alert.alert("Error", "No se pudo seleccionar el archivo.");
+    }
+  }
+
+  /**
    * Botón "Conectar" de cada dispositivo.
-   * 1) Verifica que el otro lado responda el protocolo LocalSend real.
-   * 2) Pide el archivo a mandar.
-   * 3) Ejecuta el handshake (prepare-upload) + subida (upload).
+   * Si ya hay un archivo seleccionado, envía ese. Sino, abre el selector de archivos.
    */
   async function handleConnectPress(device: DiscoveredDevice) {
-    if (connectingId) return; // evita doble tap mientras ya hay una conexión en curso
+    if (connectingId) return;
 
     setConnectingId(device.id);
 
     try {
       console.log("Conectando con:", device.name);
-
-      // Log temporal para confirmar que la IP resuelta por Zeroconf
-      // es la real de la PC (sacalo cuando confirmes que anda bien).
       console.log("IP resuelta:", device.address, ":", device.port);
 
-      const picked = await DocumentPicker.getDocumentAsync({
-        multiple: false,
-        copyToCacheDirectory: true,
-      });
+      let fileToUpload = selectedFile;
 
-      if (picked.canceled) {
-        return;
+      // Si no seleccionó un archivo previamente, abrimos el selector en el momento
+      if (!fileToUpload) {
+        const picked = await DocumentPicker.getDocumentAsync({
+          multiple: false,
+          copyToCacheDirectory: true,
+        });
+
+        if (picked.canceled || picked.assets.length === 0) {
+          setConnectingId(null);
+          return;
+        }
+
+        const pickedFile = picked.assets[0];
+        fileToUpload = {
+          uri: pickedFile.uri,
+          name: pickedFile.name,
+          size: pickedFile.size ?? 0,
+          mimeType: pickedFile.mimeType ?? "application/octet-stream",
+        };
+
+        setSelectedFile(fileToUpload);
       }
 
-      const file = picked.assets[0];
-      setSelectedFile(file.name);
-
+      // Proceso de conexión y transferencia
       const result = await connectAndSendFile(
         device,
         getDeviceName(),
-        {
-          uri: file.uri,
-          name: file.name,
-          size: file.size ?? 0,
-          mimeType: file.mimeType ?? "application/octet-stream",
-        }
+        fileToUpload
       );
 
       if (!result.ok) {
@@ -96,6 +130,7 @@ export default function HomeScreen() {
       }
 
       await showConnectionNotification(`Archivo enviado a ${device.name}`);
+      Alert.alert("Éxito", `Archivo "${fileToUpload.name}" enviado a ${device.name}`);
     } catch (error) {
       console.error("Error conectando:", error);
       Alert.alert(
@@ -107,30 +142,16 @@ export default function HomeScreen() {
     }
   }
 
-  async function handlePickFile() {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        multiple: false,
-      });
-
-      if (!result.canceled && result.assets.length > 0) {
-        setSelectedFile(result.assets[0].name);
-      }
-    } catch (error) {
-      console.error("Error seleccionando archivo:", error);
-    }
-  }
-
   useEffect(() => {
     initializeNotifications();
 
     /*
-     * Servidor HTTP del celular.
+     * Servidor HTTP local del celular.
      */
     startLocalServer();
 
     /*
-     * Cuando OTRO dispositivo intenta conectarse con este celular.
+     * Handler de conexiones entrantes desde otros dispositivos.
      */
     setConnectionHandler(async (deviceName) => {
       console.log("Conexión recibida desde:", deviceName);
@@ -138,17 +159,15 @@ export default function HomeScreen() {
     });
 
     /*
-     * Publicamos el dispositivo.
+     * Publicación en mDNS / Zeroconf.
      */
     startPublishing();
 
     /*
-     * Buscamos otros dispositivos.
+     * Descubrimiento de dispositivos remotos.
      */
     const cleanup = startDiscovery(
       (device) => {
-        // Defensa extra: si por algún motivo el filtro de
-        // discoveryService no lo agarró, lo descartamos acá también.
         if (device.id === getDeviceId()) {
           return;
         }
@@ -181,10 +200,6 @@ export default function HomeScreen() {
   }, []);
 
   function searchDevices() {
-    /*
-     * Limpiamos la lista Y forzamos un nuevo ciclo de consultas mDNS,
-     * en vez de esperar al backoff natural del protocolo.
-     */
     setDevices([]);
     setSearching(true);
     rescan();
@@ -195,16 +210,19 @@ export default function HomeScreen() {
       <Text style={styles.title}>LocalSend Clone</Text>
 
       <Pressable style={styles.button} onPress={handlePickFile}>
-        <Text style={styles.buttonText}>Elegir archivo</Text>
+        <Text style={styles.buttonText}>
+          {selectedFile ? "Cambiar archivo" : "Elegir archivo"}
+        </Text>
       </Pressable>
 
       {selectedFile && (
         <Text style={styles.fileText}>
-          Archivo seleccionado: {selectedFile}
+          Archivo seleccionado: {selectedFile.name} (
+          {(selectedFile.size / 1024).toFixed(1)} KB)
         </Text>
       )}
 
-      <Pressable style={styles.button} onPress={searchDevices}>
+      <Pressable style={styles.buttonSecondary} onPress={searchDevices}>
         <Text style={styles.buttonText}>
           {searching ? "Buscando dispositivos..." : "Buscar dispositivos"}
         </Text>
@@ -231,7 +249,7 @@ export default function HomeScreen() {
               {item.address}:{item.port}
             </Text>
 
-            <Text style={styles.deviceInfo}>{item.platform}</Text>
+            <Text style={styles.deviceInfo}>Plataforma: {item.platform}</Text>
 
             <Pressable
               style={[
@@ -244,7 +262,7 @@ export default function HomeScreen() {
               {connectingId === item.id ? (
                 <ActivityIndicator color="white" />
               ) : (
-                <Text style={styles.connectButtonText}>Conectar</Text>
+                <Text style={styles.connectButtonText}>Conectar y Enviar</Text>
               )}
             </Pressable>
           </View>
@@ -266,12 +284,19 @@ const styles = StyleSheet.create({
     fontSize: 30,
     fontWeight: "bold",
     color: "white",
-    marginBottom: 30,
+    marginBottom: 20,
   },
 
   button: {
     backgroundColor: "#2563EB",
     padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+
+  buttonSecondary: {
+    backgroundColor: "#374151",
+    padding: 14,
     borderRadius: 12,
     marginBottom: 16,
   },
@@ -284,8 +309,9 @@ const styles = StyleSheet.create({
   },
 
   fileText: {
-    color: "white",
-    marginBottom: 20,
+    color: "#60A5FA",
+    marginBottom: 16,
+    fontWeight: "500",
   },
 
   sectionTitle: {

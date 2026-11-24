@@ -1,6 +1,7 @@
 const {
   contextBridge,
   ipcRenderer,
+  webUtils,
 } = require("electron");
 
 contextBridge.exposeInMainWorld(
@@ -26,6 +27,38 @@ contextBridge.exposeInMainWorld(
         "device:connect",
         device
       ),
+
+    selectFiles: () =>
+      ipcRenderer.invoke(
+        "files:select"
+      ),
+
+    sendFile: (
+      device,
+      filePath
+    ) =>
+      ipcRenderer.invoke(
+        "file:send",
+        {
+          device,
+          filePath,
+        }
+      ),
+
+    getFilePath: (file) => {
+      try {
+        return webUtils.getPathForFile(
+          file
+        );
+      } catch (error) {
+        console.error(
+          "No se pudo obtener la ruta del archivo:",
+          error
+        );
+
+        return null;
+      }
+    },
 
     onDeviceFound: (
       callback

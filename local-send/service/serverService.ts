@@ -1,349 +1,84 @@
-import TcpSocket from "react-native-tcp-socket";
+import httpBridge from "react-native-http-bridge-refurbished";
 
-const PORT = 53317;
+let isServerRunning = false;
+let onConnectionCallback: ((senderAlias: string) => void) | null = null;
 
-let server: ReturnType<
-  typeof TcpSocket.createServer
-> | null = null;
-
-let onConnectionRequest:
-  | ((deviceName: string) => void)
-  | null = null;
-
-export function setConnectionHandler(
-  handler: (deviceName: string) => void
-) {
-  onConnectionRequest = handler;
+export function setConnectionHandler(handler: (deviceName: string) => void) {
+  onConnectionCallback = handler;
 }
 
-function sendJson(
-  socket: any,
-  statusCode: number,
-  data: object
-) {
-  const body = JSON.stringify(data);
+export function startLocalServer(port: number = 53317) {
+  if (isServerRunning) return;
 
-  const statusText =
-    statusCode === 200
-      ? "OK"
-      : statusCode === 404
-        ? "Not Found"
-        : "Error";
+  httpBridge.start(port, "http_service", (request) => {
+    const { requestId, postData, type, url } = request;
 
-  const response =
-    `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
-    "Content-Type: application/json; charset=utf-8\r\n" +
-    `Content-Length: ${body.length}\r\n` +
-    "Connection: close\r\n" +
-    "\r\n" +
-    body;
+    // GET /api/localsend/v2/info
+    if (url.includes("/api/localsend/v2/info") && type === "GET") {
+      httpBridge.respond(
+        requestId,
+        200,
+        "application/json",
+        JSON.stringify({
+          alias: "Celular React Native",
+          version: "2.0",
+          deviceModel: "Mobile",
+          deviceType: "mobile",
+        })
+      );
+    }
+    // POST /api/localsend/v2/prepare-upload
+    else if (url.includes("/api/localsend/v2/prepare-upload") && type === "POST") {
+      try {
+        const body = postData ? JSON.parse(postData) : {};
+        const senderAlias = body?.info?.alias || "Dispositivo Remoto";
 
-  try {
-    socket.end(response);
-  } catch (error) {
-    console.error(
-      "Error enviando respuesta:",
-      error
-    );
-  }
-}
+        if (onConnectionCallback) {
+          onConnectionCallback(senderAlias);
+        }
 
-export function startLocalServer() {
-  if (server) {
-    console.log(
-      "Servidor mobile ya iniciado"
-    );
+        const sessionId = `session-${Date.now()}`;
+        const responseFiles: Record<string, string> = {};
 
-    return;
-  }
+        if (body?.files) {
+          Object.keys(body.files).forEach((fileId) => {
+            responseFiles[fileId] = `token-${Date.now()}`;
+          });
+        }
 
-  server =
-    TcpSocket.createServer(
-      (socket) => {
-        console.log(
-          "Nueva conexión desde:",
-          socket.remoteAddress
+        httpBridge.respond(
+          requestId,
+          200,
+          "application/json",
+          JSON.stringify({ sessionId, files: responseFiles })
         );
-
-        let requestData = "";
-        let handled = false;
-
-        socket.on(
-          "data",
-          (data) => {
-            if (handled) {
-              return;
-            }
-
-            requestData +=
-              data.toString();
-
-            if (
-              !requestData.includes(
-                "\r\n\r\n"
-              )
-            ) {
-              return;
-            }
-
-            const headerEnd =
-              requestData.indexOf(
-                "\r\n\r\n"
-              );
-
-            const headers =
-              requestData.substring(
-                0,
-                headerEnd
-              );
-
-            const body =
-              requestData.substring(
-                headerEnd + 4
-              );
-
-            const firstLine =
-              headers.split(
-                "\r\n"
-              )[0];
-
-            const [
-              method,
-              requestPath,
-            ] = firstLine.split(
-              " "
-            );
-
-            console.log(
-              "Request:",
-              firstLine
-            );
-
-            /*
-             * PING
-             */
-            if (
-              method === "GET" &&
-              requestPath ===
-                "/api/ping"
-            ) {
-              handled = true;
-
-              sendJson(
-                socket,
-                200,
-                {
-                  ok: true,
-                  message:
-                    "LocalSend Mobile activo",
-                }
-              );
-
-              return;
-            }
-
-            /*
-             * INFO
-             */
-            if (
-              method === "GET" &&
-              requestPath ===
-                "/api/info"
-            ) {
-              handled = true;
-
-              sendJson(
-                socket,
-                200,
-                {
-                  alias:
-                    "LocalSend Mobile",
-
-                  version:
-                    "1.0",
-
-                  deviceModel:
-                    "Android",
-
-                  deviceType:
-                    "mobile",
-
-                  port:
-                    PORT,
-
-                  protocol:
-                    "http",
-
-                  download:
-                    true,
-                }
-              );
-
-              return;
-            }
-
-            /*
-             * CONEXIÓN
-             */
-            if (
-              method === "POST" &&
-              requestPath ===
-                "/api/connect"
-            ) {
-              handled = true;
-
-              let deviceName =
-                "Otro dispositivo";
-
-              try {
-                const data =
-                  JSON.parse(body);
-
-                if (
-                  typeof data.deviceName ===
-                  "string"
-                ) {
-                  deviceName =
-                    data.deviceName;
-                }
-              } catch (error) {
-                console.log(
-                  "No se pudo interpretar body:",
-                  error
-                );
-              }
-
-              console.log(
-                "Solicitud de conexión de:",
-                deviceName
-              );
-
-              /*
-               * Avisamos a la app.
-               */
-              if (
-                onConnectionRequest
-              ) {
-                onConnectionRequest(
-                  deviceName
-                );
-              }
-
-              sendJson(
-                socket,
-                200,
-                {
-                  ok: true,
-                  connected: true,
-                  message:
-                    `Conectado con ${deviceName}`,
-                }
-              );
-
-              return;
-            }
-
-            handled = true;
-
-            sendJson(
-              socket,
-              404,
-              {
-                ok: false,
-                error:
-                  "Endpoint no encontrado",
-              }
-            );
-          }
-        );
-
-        socket.on(
-          "error",
-          (error) => {
-            console.error(
-              "Error socket:",
-              error
-            );
-          }
-        );
-
-        socket.on(
-          "close",
-          () => {
-            console.log(
-              "Conexión cerrada"
-            );
-          }
-        );
+      } catch (e) {
+        httpBridge.respond(requestId, 400, "application/json", JSON.stringify({ error: "Invalid JSON" }));
       }
-    );
-
-  server.on(
-    "error",
-    (error) => {
-      console.error(
-        "Error servidor:",
-        error
+    }
+    // POST /api/localsend/v2/upload
+    else if (url.includes("/api/localsend/v2/upload") && type === "POST") {
+      httpBridge.respond(
+        requestId,
+        200,
+        "application/json",
+        JSON.stringify({ ok: true })
       );
     }
-  );
-
-  server.on(
-    "listening",
-    () => {
-      console.log(
-        "================================"
-      );
-
-      console.log(
-        "LocalSend Mobile HTTP iniciado"
-      );
-
-      console.log(
-        `Escuchando en 0.0.0.0:${PORT}`
-      );
-
-      console.log(
-        "================================"
-      );
+    // Default 404
+    else {
+      httpBridge.respond(requestId, 404, "text/plain", "Not Found");
     }
-  );
-
-  server.on(
-    "close",
-    () => {
-      console.log(
-        "Servidor mobile detenido"
-      );
-
-      server = null;
-    }
-  );
-
-  server.listen({
-    host: "0.0.0.0",
-    port: PORT,
-    reuseAddress: true,
   });
+
+  isServerRunning = true;
+  console.log(`[ServerService] Servidor HTTP escuchando en puerto ${port}`);
 }
 
 export function stopLocalServer() {
-  if (!server) {
-    return;
+  if (isServerRunning) {
+    httpBridge.stop();
+    isServerRunning = false;
+    console.log("[ServerService] Servidor HTTP detenido.");
   }
-
-  try {
-    server.close();
-  } catch (error) {
-    console.error(
-      "Error cerrando servidor:",
-      error
-    );
-
-    server = null;
-  }
-}
-
-export function getLocalServerPort() {
-  return PORT;
 }

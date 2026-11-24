@@ -8,34 +8,55 @@ const DEFAULT_PORT = 53317;
 let server = null;
 let currentPort = null;
 
-// Se llama cuando otro dispositivo (el celular) pide conectarse.
-// Conectá esto desde main.js para avisarle a la ventana de Electron
-// (por ejemplo con mainWindow.webContents.send("connection-request", deviceName)).
 let onConnectionRequest = null;
 
 function setConnectionHandler(handler) {
   onConnectionRequest = handler;
 }
 
-// Carpeta donde se guardan los archivos recibidos.
-const DOWNLOADS_DIR = path.join(os.homedir(), "Downloads", "LocalSend");
+const DOWNLOADS_DIR = path.join(
+  os.homedir(),
+  "Downloads",
+  "LocalSend"
+);
 
 function ensureDownloadsDir() {
   if (!fs.existsSync(DOWNLOADS_DIR)) {
-    fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+    fs.mkdirSync(DOWNLOADS_DIR, {
+      recursive: true,
+    });
   }
 }
 
 function sanitizeFileName(name) {
-  return name.replace(/[/\\?%*:|"<>]/g, "_");
+  return name.replace(/[\/\\?%*:|"<>]/g, "_");
 }
 
-function createServer() {
+function getAvailableFilePath(fileName) {
+  const extension = path.extname(fileName);
+  const baseName = path.basename(fileName, extension);
+
+  let finalName = fileName;
+  let counter = 1;
+
+  while (
+    fs.existsSync(path.join(DOWNLOADS_DIR, finalName))
+  ) {
+    finalName = `${baseName} (${counter})${extension}`;
+    counter++;
+  }
+
+  return path.join(DOWNLOADS_DIR, finalName);
+}
+
+function createServer(port = DEFAULT_PORT) {
   return new Promise((resolve, reject) => {
     const instance = http.createServer((req, res) => {
-      // CORS básico para desarrollo
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET, POST, OPTIONS"
+      );
       res.setHeader(
         "Access-Control-Allow-Headers",
         "Content-Type, X-File-Name, X-File-Size, X-File-Type"
@@ -47,7 +68,19 @@ function createServer() {
         return;
       }
 
-      if (req.method === "GET" && req.url === "/api/info") {
+      // Parseo flexible de URL para ignorar Query Strings (?v=1) y barras finales (/api/upload/)
+      const parsedUrl = new URL(
+        req.url,
+        `http://${req.headers.host || "localhost"}`
+      );
+      const pathname = parsedUrl.pathname.replace(/\/$/, "");
+
+      /*
+       * ==========================================
+       * INFO
+       * ==========================================
+       */
+      if (req.method === "GET" && (pathname === "/api/info" || pathname === "/api/localsend/v2/info")) {
         const response = {
           alias: "LocalSend PC",
           version: "1.0",
@@ -58,13 +91,22 @@ function createServer() {
           download: true,
         };
 
-        res.writeHead(200, { "Content-Type": "application/json" });
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+        });
         res.end(JSON.stringify(response));
         return;
       }
 
-      if (req.method === "GET" && req.url === "/api/ping") {
-        res.writeHead(200, { "Content-Type": "application/json" });
+      /*
+       * ==========================================
+       * PING
+       * ==========================================
+       */
+      if (req.method === "GET" && pathname === "/api/ping") {
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+        });
         res.end(
           JSON.stringify({
             ok: true,
@@ -74,10 +116,12 @@ function createServer() {
         return;
       }
 
-      // -----------------------------------------------------------------
-      // NUEVO: acepta la solicitud de conexión que manda el celular.
-      // -----------------------------------------------------------------
-      if (req.method === "POST" && req.url === "/api/connect") {
+      /*
+       * ==========================================
+       * CONEXIÓN
+       * ==========================================
+       */
+      if (req.method === "POST" && pathname === "/api/connect") {
         let body = "";
 
         req.on("data", (chunk) => {
@@ -93,16 +137,24 @@ function createServer() {
               deviceName = data.deviceName;
             }
           } catch (error) {
-            console.log("No se pudo interpretar el body:", error);
+            console.log(
+              "No se pudo interpretar el body:",
+              error
+            );
           }
 
-          console.log("Solicitud de conexión de:", deviceName);
+          console.log(
+            "Solicitud de conexión de:",
+            deviceName
+          );
 
           if (onConnectionRequest) {
             onConnectionRequest(deviceName);
           }
 
-          res.writeHead(200, { "Content-Type": "application/json" });
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+          });
           res.end(
             JSON.stringify({
               ok: true,
@@ -113,80 +165,128 @@ function createServer() {
         });
 
         req.on("error", (error) => {
-          console.error("Error leyendo body de /api/connect:", error);
+          console.error(
+            "Error leyendo body de /api/connect:",
+            error
+          );
         });
 
         return;
       }
 
-      // -----------------------------------------------------------------
-      // NUEVO: recibe el archivo que manda el celular.
-      // -----------------------------------------------------------------
-      if (req.method === "POST" && req.url === "/api/upload") {
+      /*
+       * ==========================================
+       * RECIBIR ARCHIVO
+       * ==========================================
+       */
+      if (req.method === "POST" && pathname === "/api/upload") {
         const rawName = req.headers["x-file-name"];
-        const fileName = rawName
-          ? sanitizeFileName(decodeURIComponent(rawName))
+
+        let fileName = rawName
+          ? decodeURIComponent(rawName)
           : `archivo-${Date.now()}`;
 
-        const chunks = [];
+        fileName = sanitizeFileName(fileName);
 
-        req.on("data", (chunk) => {
-          chunks.push(chunk);
-        });
+        ensureDownloadsDir();
 
-        req.on("end", () => {
+        const filePath = getAvailableFilePath(fileName);
+
+        console.log("Recibiendo archivo:", fileName);
+        console.log("Guardando en:", filePath);
+
+        const writeStream = fs.createWriteStream(filePath);
+        let hasError = false;
+
+        req.on("error", (error) => {
+          hasError = true;
+          console.error("Error recibiendo archivo:", error);
+
+          writeStream.destroy();
+
           try {
-            ensureDownloadsDir();
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+            }
+          } catch {}
 
-            const filePath = path.join(DOWNLOADS_DIR, fileName);
-            const fileBuffer = Buffer.concat(chunks);
-
-            fs.writeFileSync(filePath, fileBuffer);
-
-            console.log("Archivo recibido:", filePath);
-
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(
-              JSON.stringify({
-                ok: true,
-                message: `Archivo guardado en ${filePath}`,
-              })
-            );
-          } catch (error) {
-            console.error("Error guardando archivo:", error);
-
-            res.writeHead(500, { "Content-Type": "application/json" });
+          if (!res.headersSent) {
+            res.writeHead(500, {
+              "Content-Type": "application/json",
+            });
             res.end(
               JSON.stringify({
                 ok: false,
-                error: "No se pudo guardar el archivo",
+                error: "Error al recibir el archivo",
               })
             );
           }
         });
 
-        req.on("error", (error) => {
-          console.error("Error leyendo body de /api/upload:", error);
+        writeStream.on("error", (error) => {
+          hasError = true;
+          console.error("Error escribiendo archivo:", error);
+
+          if (!res.headersSent) {
+            res.writeHead(500, {
+              "Content-Type": "application/json",
+            });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: "Error al guardar el archivo localmente",
+              })
+            );
+          }
         });
 
+        writeStream.on("finish", () => {
+          if (!hasError && !res.headersSent) {
+            console.log("Archivo guardado exitosamente:", filePath);
+            res.writeHead(200, {
+              "Content-Type": "application/json",
+            });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                message: "Archivo recibido correctamente",
+                filePath,
+              })
+            );
+          }
+        });
+
+        req.pipe(writeStream);
         return;
       }
 
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Not found" }));
+      /*
+       * ==========================================
+       * 404 NOT FOUND
+       * ==========================================
+       */
+      res.writeHead(404, {
+        "Content-Type": "application/json",
+      });
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: "Endpoint no encontrado",
+          pathRequested: pathname,
+        })
+      );
     });
 
-    instance.on("error", reject);
+    instance.on("error", (error) => {
+      console.error("Error en el servidor HTTP:", error);
+      reject(error);
+    });
 
-    instance.listen(DEFAULT_PORT, "0.0.0.0", () => {
-      currentPort = DEFAULT_PORT;
+    instance.listen(port, () => {
       server = instance;
-
-      console.log(
-        `Servidor LocalSend escuchando en 0.0.0.0:${currentPort}`
-      );
-
-      resolve(currentPort);
+      currentPort = port;
+      console.log(`Servidor HTTP escuchando en el puerto ${port}`);
+      resolve(port);
     });
   });
 }
@@ -197,16 +297,15 @@ function getPort() {
 
 function stopServer() {
   return new Promise((resolve) => {
-    if (!server) {
+    if (server) {
+      server.close(() => {
+        server = null;
+        currentPort = null;
+        resolve();
+      });
+    } else {
       resolve();
-      return;
     }
-
-    server.close(() => {
-      server = null;
-      currentPort = null;
-      resolve();
-    });
   });
 }
 
